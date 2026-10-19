@@ -1,0 +1,68 @@
+modules:
+
+  # ICMP echo — RTT + reachability (gateway hop vs WAN targets)
+  icmp:
+    prober: icmp
+    timeout: 5s
+    icmp:
+      preferred_ip_protocol: ip4
+      ip_protocol_fallback: false
+
+  # Full-path HTTP — DNS (Pi-hole → Unbound), TCP and TLS over the uplink in one measurement
+  http_2xx:
+    prober: http
+    timeout: 10s
+    http:
+      preferred_ip_protocol: ip4
+      follow_redirects: true
+
+  # Asserts Pi-hole is still sinkholing. Catches empty gravity, a dead blocklist,
+  # blocking switched off, or a group-assignment fault.
+  dns_sinkhole:
+    prober: dns
+    timeout: 5s
+    dns:
+      query_name: 'doubleclick.net'
+      query_type: 'A'
+      transport_protocol: 'udp'
+      preferred_ip_protocol: 'ip4'
+      valid_rcodes: ['NOERROR']
+      validate_answer_rrs:
+        fail_if_not_matches_regexp:
+          - '\s+A\s+0\.0\.0\.0'
+
+  # Asserts local records still resolve. Catches Pi-hole down, dns.hosts wiped,
+  # or FTL never binding :53 — no WAN dependency.
+  dns_local_record:
+    prober: dns
+    timeout: 5s
+    dns:
+      query_name: 'homepage.arklab.app'
+      query_type: 'A'
+      transport_protocol: 'udp'
+      preferred_ip_protocol: 'ip4'
+      valid_rcodes: ['NOERROR']
+      validate_answer_rrs:
+        fail_if_not_matches_regexp:
+          - '\s+A\s+192\.168\.1\.10'
+
+  # Asserts the FULL path works: Pi-hole → Unbound → upstream, with DNSSEC.
+  # The two probes above are answered from local data and stayed green through
+  # the container-DNS outage; this one would have gone red within 60 s.
+  # one.one.one.one: signed, stable answer, queried by nothing else in the lab.
+  # Known gap: prefetch/serve-expired keep it warm, so recursion (not reachability)
+  # breaking is detected late — a cron'd cold lookup is the planned replacement.
+  dns_recursive:
+    prober: dns
+    timeout: 5s
+    dns:
+      query_name: 'one.one.one.one'
+      query_type: 'A'
+      transport_protocol: 'udp'
+      preferred_ip_protocol: 'ip4'
+      valid_rcodes: ['NOERROR']
+      validate_answer_rrs:
+        fail_if_not_matches_regexp:
+          - '\s+A\s+1\.(1\.1\.1|0\.0\.1)'
+        fail_if_matches_regexp:
+          - '\s+A\s+0\.0\.0\.0'      # sinkholed by mistake = also a failure

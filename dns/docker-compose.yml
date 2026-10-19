@@ -1,0 +1,68 @@
+# DNS stack — Pi-hole (sinkhole + local records) and Unbound (resolver).
+# Container DNS for the whole host points at Pi-hole's STATIC address on the shared
+# bridge (daemon.json: "dns": ["172.20.0.253"]), with no fallback — a resolver outage
+# must fail loudly for containers rather than be masked. See docs/post-mortems/04.
+services:
+  pihole:
+    container_name: pihole
+    image: pihole/pihole:2026.02.0
+    restart: unless-stopped
+    ports:
+      - '53:53/tcp'
+      - '53:53/udp'
+      - '8080:80/tcp'          # admin UI; normally reached via the reverse proxy
+    environment:
+      TZ: 'Europe/Helsinki'
+      WEBPASSWORD: '${PIHOLE_PASSWORD}'
+      # Literal IP, not the hostname `unbound`. dnsmasq resolves its upstream once at
+      # config-parse time; with a name, an Unbound failure used to escalate into FTL
+      # never binding :53. With the literal IP, Pi-hole stays up and serves cache +
+      # local records while Unbound is down (proven during a 15-minute crash loop).
+      # `depends_on` is deliberately absent for the same reason.
+      FTLCONF_dns_upstreams: '172.18.0.253#5335'
+      FTLCONF_dns_dnssec: 'false'                      # validated at Unbound, not twice
+      # Reverse lookups for LAN clients via the router (v6 syntax: enabled,cidr,target)
+      FTLCONF_dns_revServers: 'true,192.168.1.0/24,192.168.1.1'
+      # Web ACL: loopback, LAN, VPN range, and the reverse proxy's static address only
+      FTLCONF_webserver_acl: '+127.0.0.1,+192.168.1.0/24,+100.64.0.0/10,+172.20.0.252'
+      FTLCONF_Webserver_domain: 'pihole.arklab.app'
+    volumes:
+      - '/home/arklab/arklab-data/pihole/etc-pihole:/etc/pihole'
+      - '/home/arklab/arklab-data/pihole/etc-dnsmasq.d:/etc/dnsmasq.d'
+    networks:
+      arklab_net:
+        ipv4_address: 172.20.0.253
+        priority: 100            # default route (gravity downloads, reverse proxy)
+      pihole_net:
+        priority: 10
+
+  unbound:
+    container_name: unbound
+    image: mvance/unbound:1.22.0
+    restart: unless-stopped
+    ports: []
+    volumes:
+      - '/home/arklab/arklab-data/unbound:/opt/unbound/etc/unbound'
+    networks:
+      pihole_net:
+        ipv4_address: 172.18.0.253
+      # Not on arklab_net: nothing outside Pi-hole needs :5335, and membership would
+      # make the resolver reachable by every other container, bypassing filtering.
+    healthcheck:
+      # Built-in local zone: liveness only, WAN-independent. Never label for autoheal.
+      test: ["CMD", "drill", "@127.0.0.1", "-p", "5335", "localhost"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+networks:
+  pihole_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.18.0.0/16
+          gateway: 172.18.0.1
+          ip_range: 172.18.1.0/24   # dynamic assignment confined here; .0.x reserved for statics
+  arklab_net:
+    external: true

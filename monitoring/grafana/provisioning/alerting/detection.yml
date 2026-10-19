@@ -1,0 +1,173 @@
+# Detection rules — provisioned from the repo (read-only in the Grafana UI).
+# Every rule is FAIL-CLOSED: NoData -> Alerting, because a missing metric means the
+# exporter, cron job or probe behind it has died.
+# Retiring a rule needs a `deleteRules:` entry — removing it from this file alone
+# leaves it in the database. datasourceUid is the Prometheus datasource.
+apiVersion: 1
+groups:
+    - orgId: 1
+      name: Detection
+      folder: ArkLab
+      interval: 1m
+      rules:
+        - uid: arklab-igmp-querier-dead
+          title: IGMP querier dead
+          condition: C
+          data:
+            - refId: A
+              relativeTimeRange: {from: 600, to: 0}
+              datasourceUid: bffwgvxb0c1s0c
+              model: {refId: A, instant: true, range: false, editorMode: code, expr: 'time() - arklab_igmp_querier_last_query_seconds'}
+            - refId: C
+              datasourceUid: __expr__
+              model: {refId: C, type: threshold, expression: A, datasource: {type: __expr__, uid: __expr__}, conditions: [{evaluator: {type: gt, params: [600]}, operator: {type: and}, query: {params: []}, reducer: {type: last, params: []}, type: query}]}
+          noDataState: Alerting
+          execErrState: Error
+          for: 5m
+          annotations: {summary: 'No IGMP General Query from the host for >10 min — multicast discovery will degrade. systemctl status arklab-igmp-querier'}
+          isPaused: false
+          notification_settings: {receiver: Telegram}
+
+        - uid: arklab-speaker-not-discoverable
+          title: Speaker not discoverable (mDNS)
+          condition: C
+          data:
+            - refId: A
+              relativeTimeRange: {from: 600, to: 0}
+              datasourceUid: bffwgvxb0c1s0c
+              model: {refId: A, instant: true, range: false, editorMode: code, expr: 'arklab_mdns_speaker_discoverable'}
+            - refId: C
+              datasourceUid: __expr__
+              model: {refId: C, type: threshold, expression: A, datasource: {type: __expr__, uid: __expr__}, conditions: [{evaluator: {type: lt, params: [1]}, operator: {type: and}, query: {params: []}, reducer: {type: last, params: []}, type: query}]}
+          noDataState: Alerting
+          execErrState: Error
+          for: 15m
+          annotations: {summary: 'mDNS probe cannot see the speaker despite the querier. Run mdns-probe.py by hand NOW, while the fault is live'}
+          isPaused: false
+          notification_settings: {receiver: Telegram}
+
+        - uid: arklab-mdns-probe-stale
+          title: mDNS probe cron stale
+          condition: C
+          data:
+            - refId: A
+              relativeTimeRange: {from: 600, to: 0}
+              datasourceUid: bffwgvxb0c1s0c
+              model: {refId: A, instant: true, range: false, editorMode: code, expr: 'time() - arklab_mdns_probe_last_run_seconds'}
+            - refId: C
+              datasourceUid: __expr__
+              model: {refId: C, type: threshold, expression: A, datasource: {type: __expr__, uid: __expr__}, conditions: [{evaluator: {type: gt, params: [900]}, operator: {type: and}, query: {params: []}, reducer: {type: last, params: []}, type: query}]}
+          noDataState: Alerting
+          execErrState: Error
+          for: 5m
+          annotations: {summary: 'mdns-probe-cron.sh has not written a result in >15 min (5-min cron). The discovery sensor is blind'}
+          isPaused: false
+          notification_settings: {receiver: Telegram}
+
+        - uid: arklab-nr-leg-detached
+          title: 5G NR leg detached (nsa RSRP sentinel)
+          condition: C
+          data:
+            - refId: A
+              relativeTimeRange: {from: 600, to: 0}
+              datasourceUid: bffwgvxb0c1s0c
+              model: {refId: A, instant: true, range: false, editorMode: code, expr: 'zyxel_signal_rsrp_dbm{radio="nsa"}'}
+            - refId: C
+              datasourceUid: __expr__
+              model: {refId: C, type: threshold, expression: A, datasource: {type: __expr__, uid: __expr__}, conditions: [{evaluator: {type: lt, params: [-127]}, operator: {type: and}, query: {params: []}, reducer: {type: last, params: []}, type: query}]}
+          noDataState: Alerting
+          execErrState: Error
+          for: 30m
+          annotations: {summary: 'n78 not attached for 30 min — WAN is running LTE-only. Check which LTE band the modem anchored on; exclude it only if the NR leg cannot attach from there'}
+          isPaused: false
+          notification_settings: {receiver: Telegram}
+
+        - uid: arklab-dns-cannot-recurse
+          title: Pi-hole cannot recurse (house DNS degraded)
+          condition: C
+          data:
+            - refId: A
+              relativeTimeRange: {from: 600, to: 0}
+              datasourceUid: bffwgvxb0c1s0c
+              model: {refId: A, instant: true, range: false, editorMode: code, expr: 'probe_success{job="blackbox-dns-recursive"}'}
+            - refId: C
+              datasourceUid: __expr__
+              model: {refId: C, type: threshold, expression: A, datasource: {type: __expr__, uid: __expr__}, conditions: [{evaluator: {type: lt, params: [1]}, operator: {type: and}, query: {params: []}, reducer: {type: last, params: []}, type: query}]}
+          noDataState: Alerting
+          execErrState: Error
+          for: 3m
+          annotations: {summary: 'Pi-hole -> Unbound -> upstream path failing for 3 min. Local records may still resolve. Check WAN ICMP probes, then docker logs unbound | grep SERVFAIL'}
+          isPaused: false
+          notification_settings: {receiver: Telegram}
+
+        - uid: arklab-dns-assertion-failed
+          title: DNS assertion probe failing (sinkhole / local record)
+          condition: C
+          data:
+            - refId: A
+              relativeTimeRange: {from: 600, to: 0}
+              datasourceUid: bffwgvxb0c1s0c
+              model: {refId: A, instant: true, range: false, editorMode: code, expr: 'probe_success{job=~"blackbox-dns-(sinkhole|local)"}'}
+            - refId: C
+              datasourceUid: __expr__
+              model: {refId: C, type: threshold, expression: A, datasource: {type: __expr__, uid: __expr__}, conditions: [{evaluator: {type: lt, params: [1]}, operator: {type: and}, query: {params: []}, reducer: {type: last, params: []}, type: query}]}
+          noDataState: Alerting
+          execErrState: Error
+          for: 3m
+          annotations: {summary: 'Pi-hole at 172.20.0.253 is not answering local data (blocklist or local record). First check: docker exec pihole pihole status'}
+          isPaused: false
+          notification_settings: {receiver: Telegram}
+
+        - uid: arklab-pihole-adlist-unhealthy
+          title: Pi-hole blocklist unhealthy
+          condition: C
+          data:
+            - refId: A
+              relativeTimeRange: {from: 600, to: 0}
+              datasourceUid: bffwgvxb0c1s0c
+              model: {refId: A, instant: true, range: false, editorMode: code, expr: 'pihole_adlist_unhealthy'}
+            - refId: C
+              datasourceUid: __expr__
+              model: {refId: C, type: threshold, expression: A, datasource: {type: __expr__, uid: __expr__}, conditions: [{evaluator: {type: gt, params: [0]}, operator: {type: and}, query: {params: []}, reducer: {type: last, params: []}, type: query}]}
+          noDataState: Alerting
+          execErrState: Error
+          for: 2h
+          annotations: {summary: 'A blocklist has been unavailable (status 3/4) for 2 h. Check the URL before assuming the mirror is dead — a list can be dead while gravity exits 0'}
+          isPaused: false
+          notification_settings: {receiver: Telegram}
+
+        - uid: arklab-pihole-metrics-stale
+          title: Pi-hole metrics cron stale
+          condition: C
+          data:
+            - refId: A
+              relativeTimeRange: {from: 600, to: 0}
+              datasourceUid: bffwgvxb0c1s0c
+              model: {refId: A, instant: true, range: false, editorMode: code, expr: 'time() - pihole_metrics_last_run_seconds'}
+            - refId: C
+              datasourceUid: __expr__
+              model: {refId: C, type: threshold, expression: A, datasource: {type: __expr__, uid: __expr__}, conditions: [{evaluator: {type: gt, params: [7200]}, operator: {type: and}, query: {params: []}, reducer: {type: last, params: []}, type: query}]}
+          noDataState: Alerting
+          execErrState: Error
+          for: 10m
+          annotations: {summary: 'pihole-metrics.sh has not published in >2 h (hourly cron; refuses partial data). Run it by hand to see the failure'}
+          isPaused: false
+          notification_settings: {receiver: Telegram}
+
+        - uid: arklab-container-dns-regression
+          title: Containers fell off Pi-hole (client count collapsed)
+          condition: C
+          data:
+            - refId: A
+              relativeTimeRange: {from: 600, to: 0}
+              datasourceUid: bffwgvxb0c1s0c
+              model: {refId: A, instant: true, range: false, editorMode: code, expr: 'pihole_clients_active_1h'}
+            - refId: C
+              datasourceUid: __expr__
+              model: {refId: C, type: threshold, expression: A, datasource: {type: __expr__, uid: __expr__}, conditions: [{evaluator: {type: lt, params: [6]}, operator: {type: and}, query: {params: []}, reducer: {type: last, params: []}, type: query}]}
+          noDataState: Alerting
+          execErrState: Error
+          for: 2h
+          annotations: {summary: 'Active Pi-hole clients dropped below 6 for 2 h — ~20 containers normally show as 172.20.x.x. Check daemon.json and docker exec <c> getent hosts <public name>'}
+          isPaused: false
+          notification_settings: {receiver: Telegram}

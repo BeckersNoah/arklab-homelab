@@ -1,0 +1,20 @@
+[Unit]
+Description=ArkLab graceful container shutdown (stacks in dependency order, Telegram notice)
+# Active for the whole uptime; systemd STOPS it at shutdown and runs ExecStop.
+# After=docker.service => stopped BEFORE docker (stop order is the reverse of start order).
+# Never use ExecStart + WantedBy=shutdown.target with Requires=docker.service: the start job
+# is cancelled against docker's queued stop job, and the script silently never runs
+# (this unit's predecessor did not execute for three months).
+# See docs/post-mortems/03-the-shutdown-unit-that-never-ran.md
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/true
+ExecStop=/usr/local/bin/arklab-shutdown.sh
+TimeoutStopSec=22min
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,243 @@
+# Observability stack. Everything that needs external names is also on the shared
+# bridge (arklab_net) because the resolver's static address is reachable only there;
+# exporters that only talk to container names stay isolated on monitoring_net.
+services:
+
+  ###########################################################################
+  # PROMETHEUS — metrics collection & storage
+  ###########################################################################
+  prometheus:
+    container_name: prometheus
+    image: prom/prometheus:v3.10.0
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - /home/arklab/arklab-data/prometheus:/prometheus
+    networks:
+      - monitoring_net
+      - arklab_net
+    expose:
+      - 9090
+    ports:
+      - '127.0.0.1:9090:9090'   # host-only, for the terminal dashboard. NEVER bare 9090:9090 — published ports bypass UFW
+
+  ###########################################################################
+  # NODE EXPORTER — host metrics + textfile collector for cron-driven exporters
+  ###########################################################################
+  node-exporter:
+    container_name: node-exporter
+    image: prom/node-exporter:v1.10.2
+    restart: unless-stopped
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.rootfs=/rootfs'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+      - '--collector.textfile.directory=/var/lib/node_exporter/textfile'
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+      - /home/arklab/arklab-data/node-exporter/textfile:/var/lib/node_exporter/textfile:ro
+    networks:
+      - monitoring_net
+    expose:
+      - 9100
+    pid: host
+
+  ###########################################################################
+  # CADVISOR — per-container resource metrics
+  ###########################################################################
+  cadvisor:
+    container_name: cadvisor
+    image: gcr.io/cadvisor/cadvisor:v0.55.1
+    restart: unless-stopped
+    privileged: true
+    devices:
+      - /dev/kmsg:/dev/kmsg
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker:/var/lib/docker:ro
+      - /cgroup:/cgroup:ro
+    networks:
+      - monitoring_net
+    expose:
+      - 8080
+
+  ###########################################################################
+  # LOKI — log aggregation (usage reporting off: it would hammer a resolver
+  # it cannot reach from monitoring_net)
+  ###########################################################################
+  loki:
+    container_name: loki
+    image: grafana/loki:3.6.7
+    restart: unless-stopped
+    command: -config.file=/etc/loki/loki.yml
+    volumes:
+      - ./loki/loki.yml:/etc/loki/loki.yml:ro
+      - /home/arklab/arklab-data/loki:/loki
+    networks:
+      - monitoring_net
+    expose:
+      - 3100
+
+  ###########################################################################
+  # PROMTAIL — container + host logs → Loki, with credential redaction
+  ###########################################################################
+  promtail:
+    container_name: promtail
+    image: grafana/promtail:3.6.7
+    restart: unless-stopped
+    command: -config.file=/etc/promtail/promtail.yml
+    volumes:
+      - ./promtail/promtail.yml:/etc/promtail/promtail.yml:ro
+      - /var/log:/var/log:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    networks:
+      - monitoring_net
+    depends_on:
+      - loki
+
+  ###########################################################################
+  # GRAFANA — dashboards + alerting; rules provisioned read-only from the repo
+  ###########################################################################
+  grafana:
+    container_name: grafana
+    image: grafana/grafana:12.4.1
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: '${GRAFANA_USER}'
+      GF_SECURITY_ADMIN_PASSWORD: '${GRAFANA_PASSWORD}'
+      GF_SERVER_ROOT_URL: 'https://monitor.arklab.app'
+      GF_SERVER_DOMAIN: 'monitor.arklab.app'
+      GF_USERS_ALLOW_SIGN_UP: 'false'
+      GF_AUTH_ANONYMOUS_ENABLED: 'false'
+      GF_SECURITY_DISABLE_GRAVATAR: 'true'
+      GF_ANALYTICS_REPORTING_ENABLED: 'false'
+      GF_ANALYTICS_CHECK_FOR_UPDATES: 'false'
+    volumes:
+      - /home/arklab/arklab-data/grafana:/var/lib/grafana
+      - ./grafana/provisioning/alerting:/etc/grafana/provisioning/alerting:ro
+    networks:
+      - monitoring_net
+      - arklab_net
+    ports:
+      - '3000:3000'   # direct-port fallback over the VPN when DNS/TLS is the thing that is broken
+    depends_on:
+      - prometheus
+      - loki
+
+  ###########################################################################
+  # UPTIME KUMA — endpoint monitoring; also receives the VPN self-online push
+  ###########################################################################
+  uptime-kuma:
+    container_name: uptime-kuma
+    image: louislam/uptime-kuma:1.23.17
+    restart: unless-stopped
+    volumes:
+      - /home/arklab/arklab-data/uptime-kuma:/app/data
+    networks:
+      - monitoring_net
+      - arklab_net
+    ports:
+      - '3001:3001'   # direct-port fallback over the VPN
+
+  ###########################################################################
+  # DOCKER-AUTOHEAL — opt-in by label. The DNS stack is NEVER labelled:
+  # restarting the resolver is a network-wide outage.
+  ###########################################################################
+  docker-autoheal:
+    container_name: docker-autoheal
+    image: willfarrell/autoheal:latest@sha256:76d1f7341bee169cf08ed56f19d0194ff40ad970d8dfa096316499a3ebf148b0  # publishes no version tags
+    restart: unless-stopped
+    environment:
+      AUTOHEAL_CONTAINER_LABEL: autoheal
+      AUTOHEAL_INTERVAL: 30
+      AUTOHEAL_START_PERIOD: 60
+      AUTOHEAL_DEFAULT_STOP_TIMEOUT: 30
+      WEBHOOK_URL: "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage"
+      WEBHOOK_JSON_KEY: "text"
+      WEBHOOK_JSON_EXTRA_PARAMS: '{"chat_id":"${TELEGRAM_CHAT_ID}","parse_mode":"Markdown"}'
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - monitoring_net
+      - arklab_net
+
+  ###########################################################################
+  # BLACKBOX EXPORTER — ICMP / HTTPS / DNS-assertion probes, TLS expiry
+  ###########################################################################
+  blackbox-exporter:
+    container_name: blackbox-exporter
+    image: prom/blackbox-exporter:v0.28.0
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/blackbox/blackbox.yml'
+    volumes:
+      - ./blackbox/blackbox.yml:/etc/blackbox/blackbox.yml:ro
+    cap_add:
+      - NET_RAW   # ICMP
+    networks:
+      - monitoring_net
+      - arklab_net
+    expose:
+      - 9115
+
+  ###########################################################################
+  # 5G ROUTER EXPORTER — cellular radio metrics via the router's encrypted API.
+  # (A speedtest exporter used to live here. It ran a real speedtest per scrape,
+  # saturating the uplink ~32×/day, and its healthcheck probed `localhost` → ::1
+  # while binding IPv4, so it sat in an autoheal restart loop for two weeks.
+  # Removed; if ever reinstated, nightly via a systemd timer → textfile collector.)
+  ###########################################################################
+  zyxel-exporter:
+    container_name: zyxel-exporter
+    build: ./zyxel-exporter
+    restart: unless-stopped
+    environment:
+      ROUTER_URL: '${ROUTER_URL:-http://192.168.1.1}'
+      ROUTER_USER: '${ROUTER_USER:-admin}'
+      ROUTER_PASSWORD: '${ROUTER_PASSWORD}'
+    networks:
+      - monitoring_net
+    expose:
+      - 9877
+
+  ###########################################################################
+  # DIUN — notifies when a newer tag exists for a pinned image. Never updates.
+  # File provider: no Docker socket. Does not scan on start (a restart re-scan
+  # once produced a 10-message notification storm).
+  ###########################################################################
+  diun:
+    container_name: diun
+    image: crazymax/diun:4.33.0
+    restart: unless-stopped
+    user: "1000:1000"
+    environment:
+      TZ: 'Europe/Helsinki'
+      DIUN_WATCH_WORKERS: '4'
+      DIUN_WATCH_SCHEDULE: '0 6 * * *'
+      DIUN_WATCH_JITTER: '30s'
+      DIUN_WATCH_FIRSTCHECKNOTIF: 'false'
+      DIUN_WATCH_RUNONSTARTUP: 'false'
+      DIUN_PROVIDERS_FILE_FILENAME: '/etc/diun/images.yml'
+      DIUN_NOTIF_TELEGRAM_TOKEN: '${TELEGRAM_BOT_TOKEN}'
+      DIUN_NOTIF_TELEGRAM_CHATIDS: '${TELEGRAM_CHAT_ID}'
+    volumes:
+      - ./diun/images.yml:/etc/diun/images.yml:ro
+      - /home/arklab/arklab-data/diun:/data
+    networks:
+      - arklab_net
+
+networks:
+  monitoring_net:
+    driver: bridge
+  arklab_net:
+    external: true

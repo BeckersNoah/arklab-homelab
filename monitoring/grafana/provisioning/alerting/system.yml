@@ -1,0 +1,79 @@
+# Resource and certificate rules. The TLS rule's tls_scope="internal" filter is
+# REQUIRED — without it the alert fires on the external HTTPS probe's certificate.
+apiVersion: 1
+groups:
+    - orgId: 1
+      name: System
+      folder: ArkLab
+      interval: 1m
+      rules:
+        - uid: arklab-disk-high
+          title: Disk usage high
+          condition: C
+          data:
+            - refId: A
+              relativeTimeRange: {from: 600, to: 0}
+              datasourceUid: bffwgvxb0c1s0c
+              model: {refId: A, instant: true, range: false, editorMode: code, expr: '(1 - node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) * 100'}
+            - refId: C
+              datasourceUid: __expr__
+              model: {refId: C, type: threshold, expression: A, datasource: {type: __expr__, uid: __expr__}, conditions: [{evaluator: {type: gt, params: [80]}, operator: {type: and}, query: {params: []}, reducer: {type: last, params: []}, type: query}]}
+          noDataState: NoData
+          execErrState: Error
+          for: 5m
+          annotations: {summary: 'Disk usage is above 80%'}
+          isPaused: false
+          notification_settings: {receiver: Telegram}
+
+        - uid: arklab-ram-high
+          title: RAM usage high
+          condition: C
+          data:
+            - refId: A
+              relativeTimeRange: {from: 600, to: 0}
+              datasourceUid: bffwgvxb0c1s0c
+              model: {refId: A, instant: true, range: false, editorMode: code, expr: '(1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100'}
+            - refId: C
+              datasourceUid: __expr__
+              model: {refId: C, type: threshold, expression: A, datasource: {type: __expr__, uid: __expr__}, conditions: [{evaluator: {type: gt, params: [85]}, operator: {type: and}, query: {params: []}, reducer: {type: last, params: []}, type: query}]}
+          noDataState: NoData
+          execErrState: Error
+          for: 5m
+          annotations: {summary: 'RAM usage is above 85%'}
+          isPaused: false
+          notification_settings: {receiver: Telegram}
+
+        - uid: arklab-cpu-high
+          title: CPU usage high
+          condition: C
+          data:
+            - refId: A
+              relativeTimeRange: {from: 600, to: 0}
+              datasourceUid: bffwgvxb0c1s0c
+              model: {refId: A, instant: true, range: false, editorMode: code, expr: '100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)'}
+            - refId: C
+              datasourceUid: __expr__
+              model: {refId: C, type: threshold, expression: A, datasource: {type: __expr__, uid: __expr__}, conditions: [{evaluator: {type: gt, params: [90]}, operator: {type: and}, query: {params: []}, reducer: {type: last, params: []}, type: query}]}
+          noDataState: NoData
+          execErrState: Error
+          for: 5m
+          annotations: {summary: 'CPU usage is above 90%'}
+          isPaused: false
+          notification_settings: {receiver: Telegram}
+
+        - uid: arklab-cert-expiry
+          title: Certificate expiration
+          condition: C
+          data:
+            - refId: A
+              relativeTimeRange: {from: 600, to: 0}
+              datasourceUid: bffwgvxb0c1s0c
+              model: {refId: A, instant: true, range: false, editorMode: code, expr: 'min((probe_ssl_earliest_cert_expiry{tls_scope="internal"} - time()) / 86400)'}
+            - refId: C
+              datasourceUid: __expr__
+              model: {refId: C, type: threshold, expression: A, datasource: {type: __expr__, uid: __expr__}, conditions: [{evaluator: {type: lt, params: [21]}, operator: {type: and}, query: {params: []}, reducer: {type: last, params: []}, type: query}]}
+          noDataState: Alerting
+          execErrState: Error
+          annotations: {summary: 'Internal wildcard certificate expires in <21 days. Check ~/.acme.sh/cron.log and verify with openssl s_client — never curl -k'}
+          isPaused: false
+          notification_settings: {receiver: Telegram}

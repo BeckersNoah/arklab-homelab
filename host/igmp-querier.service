@@ -1,0 +1,37 @@
+[Unit]
+Description=IGMP querier — keeps the router's snooping table fresh (RFC 2236)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=arklab
+Group=arklab
+Environment=IGMP_IFACE=eth0
+Environment=IGMP_SOURCE_IP=192.168.1.10
+Environment=IGMP_INTERVAL=125
+Environment=IGMP_METRICS=/home/arklab/arklab-data/node-exporter/textfile/igmp-querier.prom
+ExecStart=/usr/bin/python3 /usr/local/bin/igmp-querier.py
+Restart=always
+RestartSec=10
+
+# Least privilege: an unprivileged user with exactly one capability (raw socket)
+AmbientCapabilities=CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_RAW
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/home/arklab/arklab-data/node-exporter/textfile
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,28 @@
+# Secrets — never commit
+.env
+**/.env
+
+# Certificates & keys
+**/*.pem
+**/*.crt
+**/*.key
+
+# Databases, logs, runtime state
+**/*.db
+**/*.db-shm
+**/*.db-wal
+**/*.log
+**/logs/
+data/
+
+# Python
+__pycache__/
+*.pyc
+venv/
+
+# Editor backups
+*.save
+*.bak
+*.bak-*
+*.orig
+*~

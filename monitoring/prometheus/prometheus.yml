@@ -1,0 +1,127 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    instance: 'arklab'
+
+scrape_configs:
+
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+        labels: {service: 'prometheus'}
+
+  - job_name: 'node-exporter'
+    static_configs:
+      - targets: ['node-exporter:9100']
+        labels: {service: 'node-exporter', host: 'arklab'}
+
+  - job_name: 'cadvisor'
+    static_configs:
+      - targets: ['cadvisor:8080']
+        labels: {service: 'cadvisor', host: 'arklab'}
+
+  # Grafana's own /metrics — grafana_alerting_alerts feeds the firing-alert count
+  # in the terminal dashboard.
+  - job_name: 'grafana'
+    static_configs:
+      - targets: ['grafana:3000']
+        labels: {service: 'grafana'}
+
+  # ------------------------------------------------------------
+  # WAN / 5G observability
+  # ------------------------------------------------------------
+
+  # ICMP RTT + loss: gateway hop vs WAN targets. Comparing the pairs isolates
+  # faults: gateway bad = LAN/WiFi problem; gateway good + WAN bad = cellular uplink.
+  - job_name: 'blackbox-icmp'
+    metrics_path: /probe
+    params: {module: [icmp]}
+    static_configs:
+      - targets:
+          - 192.168.1.1        # gateway — LAN hop only
+          - 1.1.1.1            # WAN — full 5G path
+          - 9.9.9.9            # WAN — second opinion
+        labels: {service: 'blackbox'}
+    relabel_configs:
+      - {source_labels: [__address__], target_label: __param_target}
+      - {source_labels: [__param_target], target_label: probe_target}
+      - {target_label: __address__, replacement: blackbox-exporter:9115}
+
+  # Full-path HTTPS probe — DNS via Pi-hole → Unbound, then TCP + TLS over the
+  # uplink. Deliberately an EXTERNAL target: catches DNS-layer slowness ICMP misses.
+  - job_name: 'blackbox-http'
+    metrics_path: /probe
+    params: {module: [http_2xx]}
+    scrape_interval: 60s
+    static_configs:
+      - targets: ['https://www.example.com']
+        labels: {service: 'blackbox'}
+    relabel_configs:
+      - {source_labels: [__address__], target_label: __param_target}
+      - {source_labels: [__param_target], target_label: probe_target}
+      - {target_label: __address__, replacement: blackbox-exporter:9115}
+
+  # 5G radio metrics. Each scrape is a stateless login → fetch → logout on the router.
+  - job_name: 'zyxel-router'
+    scrape_interval: 20s
+    scrape_timeout: 15s
+    static_configs:
+      - targets: ['zyxel-exporter:9877']
+        labels: {service: 'zyxel-router'}
+
+  # Internal TLS expiry — the lab's own wildcard cert. Separate from blackbox-http
+  # (external target) and labelled tls_scope=internal so the expiry alert never
+  # fires on a third party's certificate. Nothing watched our own cert until it had
+  # sat expired for 46 days. The target is a host that returns 200 (most redirect,
+  # which http_2xx counts as failure even though TLS metrics still emit).
+  - job_name: 'blackbox-tls-internal'
+    metrics_path: /probe
+    params: {module: [http_2xx]}
+    scrape_interval: 5m
+    static_configs:
+      - targets: ['https://homepage.arklab.app']
+        labels: {service: 'blackbox', tls_scope: 'internal'}
+    relabel_configs:
+      - {source_labels: [__address__], target_label: __param_target}
+      - {source_labels: [__param_target], target_label: probe_target}
+      - {target_label: __address__, replacement: blackbox-exporter:9115}
+
+  # DNS ASSERTION probes — verify Pi-hole is BLOCKING and RESOLVING, not merely
+  # alive. Targeting the resolver's static bridge address exercises the exact path
+  # every container uses. See docs/post-mortems/04.
+  - job_name: 'blackbox-dns-sinkhole'
+    metrics_path: /probe
+    params: {module: [dns_sinkhole]}
+    scrape_interval: 60s
+    static_configs:
+      - targets: ['172.20.0.253:53']
+        labels: {service: 'blackbox', dns_check: 'sinkhole'}
+    relabel_configs:
+      - {source_labels: [__address__], target_label: __param_target}
+      - {source_labels: [__param_target], target_label: probe_target}
+      - {target_label: __address__, replacement: blackbox-exporter:9115}
+
+  - job_name: 'blackbox-dns-local'
+    metrics_path: /probe
+    params: {module: [dns_local_record]}
+    scrape_interval: 60s
+    static_configs:
+      - targets: ['172.20.0.253:53']
+        labels: {service: 'blackbox', dns_check: 'local_record'}
+    relabel_configs:
+      - {source_labels: [__address__], target_label: __param_target}
+      - {source_labels: [__param_target], target_label: probe_target}
+      - {target_label: __address__, replacement: blackbox-exporter:9115}
+
+  - job_name: 'blackbox-dns-recursive'
+    metrics_path: /probe
+    params: {module: [dns_recursive]}
+    scrape_interval: 60s
+    static_configs:
+      - targets: ['172.20.0.253:53']
+        labels: {service: 'blackbox', dns_check: 'recursive'}
+    relabel_configs:
+      - {source_labels: [__address__], target_label: __param_target}
+      - {source_labels: [__param_target], target_label: probe_target}
+      - {target_label: __address__, replacement: blackbox-exporter:9115}

@@ -1,0 +1,50 @@
+name: validate
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  compose:
+    name: docker compose config
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate every compose file (placeholder .env from .env.example)
+        run: |
+          set -euo pipefail
+          for f in $(git ls-files | grep '/docker-compose.yml$'); do
+            d=$(dirname "$f")
+            [ -f "$d/.env.example" ] && cp "$d/.env.example" "$d/.env"
+            docker compose -f "$f" --project-directory "$d" config -q
+            echo "OK  $f"
+          done
+      - name: Refuse ~ and ${HOME} in volume sources
+        run: |
+          set -euo pipefail
+          if grep -rnE "^\s*-\s*['\"]?(~|\\$\{HOME\})/" --include=docker-compose.yml .; then
+            echo "::error::relative volume source — use absolute paths (two DNS outages say why)"
+            exit 1
+          fi
+          echo "OK  no relative volume sources"
+
+  shell:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+      - name: Lint
+        run: shellcheck -S warning $(git ls-files '*.sh')
+
+  python:
+    name: python syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compile
+        run: python -m py_compile $(git ls-files '*.py')
